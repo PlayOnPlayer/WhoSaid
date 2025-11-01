@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cards Against AI - Game</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="game-container">
+        <!-- Header -->
+        <div class="game-header">
+            <div class="room-info">
+                <span class="room-code" id="roomCodeDisplay">----</span>
+                <button class="btn-small" onclick="copyRoomCode()">Copy Code</button>
+            </div>
+            <div class="scoreboard" id="scoreboard">
+                <div class="score-title">Scores</div>
+                <div class="scores-list" id="scoresList"></div>
+            </div>
+        </div>
+        
+        <!-- Main game area -->
+        <div class="game-main">
+            <!-- Lobby State -->
+            <div id="lobbyState" class="game-state">
+                <h2>Waiting for players...</h2>
+                <div class="players-list">
+                    <h3>Players:</h3>
+                    <ul id="playersList"></ul>
+                </div>
+                <div id="hostControls">
+                    <p>Share the room code above to invite friends!</p>
+                    <button id="startGameBtn" class="btn btn-primary">Start Game</button>
+                </div>
+                <div id="waitingMessage">
+                    <p>Waiting for host to start the game...</p>
+                </div>
+            </div>
+            
+            <!-- Answering State -->
+            <div id="answeringState" class="game-state hidden">
+                <div class="question-card">
+                    <div class="round-info">Round <span id="roundNumber">1</span></div>
+                    <h2 id="currentQuestion"></h2>
+                    <div class="timer" id="answerTimer">20</div>
+                </div>
+                <div class="answer-input-area">
+                    <input type="text" id="answerInput" placeholder="Type your answer here..." maxlength="200" class="input-large">
+                    <button id="submitAnswerBtn" class="btn btn-primary">Submit Answer</button>
+                </div>
+            </div>
+            
+            <!-- Voting State -->
+            <div id="votingState" class="game-state hidden">
+                <div class="question-card">
+                    <h2>Which answer is AI?</h2>
+                    <div class="timer" id="voteTimer">30</div>
+                </div>
+                <div class="answers-grid" id="answersGrid"></div>
+                <div id="votedMessage" class="status-message hidden">
+                    <p>✓ You voted!</p>
+                </div>
+            </div>
+            
+            <!-- Results State -->
+            <div id="resultsState" class="game-state hidden">
+                <div class="question-card">
+                    <h2>Results</h2>
+                </div>
+                <div class="answers-grid" id="resultsAnswersGrid"></div>
+                <div class="results-summary" id="resultsSummary"></div>
+            </div>
+            
+            <!-- Game Over State -->
+            <div id="gameOverState" class="game-state hidden">
+                <div class="winner-card">
+                    <h1 id="winnerName">🎉 Winner! 🎉</h1>
+                    <p id="winnerMessage"></p>
+                </div>
+                <div class="scoreboard-final" id="finalScores"></div>
+                <div id="hostControlsEnd" class="hidden">
+                    <button id="playAgainBtn" class="btn btn-primary">Play Again</button>
+                </div>
+            </div>
+        </div>
+        
+        <div id="errorMsg" class="error-message"></div>
+    </div>
+    
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="game.js"></script>
+</body>
+</html>

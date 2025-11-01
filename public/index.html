@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cards Against AI</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>🎮 Cards Against AI</h1>
+        <p class="subtitle">Answer prompts, then guess which answer is AI!</p>
+        
+        <div class="main-menu">
+            <div class="menu-card">
+                <h2>Create Room</h2>
+                <input type="text" id="hostNameInput" placeholder="Your name" maxlength="20" class="input">
+                <button id="createBtn" class="btn btn-primary">Create Game</button>
+            </div>
+            
+            <div class="menu-divider">
+                <span>OR</span>
+            </div>
+            
+            <div class="menu-card">
+                <h2>Join Room</h2>
+                <input type="text" id="roomCodeInput" placeholder="Enter 4-letter code" maxlength="4" class="input">
+                <input type="text" id="playerNameInput" placeholder="Your name" maxlength="20" class="input">
+                <button id="joinBtn" class="btn btn-secondary">Join Game</button>
+            </div>
+        </div>
+        
+        <div id="errorMsg" class="error-message"></div>
+        
+        <div id="loadingIndicator" class="loading hidden">
+            Connecting...
+        </div>
+    </div>
+    
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="index.js"></script>
+</body>
+</html>
