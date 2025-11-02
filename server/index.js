@@ -18,7 +18,8 @@ const {
   calculateResults,
   checkForWinner,
   setGameOver,
-  GAME_STATES
+  GAME_STATES,
+  rooms
 } = require('./game-manager');
 
 const { initializeAI, generateAIAnswer } = require('./ai-service');
@@ -33,44 +34,7 @@ initializeAI();
 // Serve static files from public directory
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Store active timers
-const roomTimers = new Map();
-
-/**
- * Clear timer for a room
- */
-function clearRoomTimer(roomCode) {
-  if (roomTimers.has(roomCode)) {
-    clearTimeout(roomTimers.get(roomCode));
-    roomTimers.delete(roomCode);
-  }
-}
-
-/**
- * Create answer phase timer (20 seconds)
- */
-function createAnswerTimer(roomCode) {
-  clearRoomTimer(roomCode);
-  
-  const timer = setTimeout(() => {
-    handleAnswerPhaseEnd(roomCode);
-  }, 20000);
-  
-  roomTimers.set(roomCode, timer);
-}
-
-/**
- * Create voting phase timer (30 seconds)
- */
-function createVotingTimer(roomCode) {
-  clearRoomTimer(roomCode);
-  
-  const timer = setTimeout(() => {
-    handleVotingPhaseEnd(roomCode);
-  }, 30000);
-  
-  roomTimers.set(roomCode, timer);
-}
+// Timers removed - using auto-advance when all players answer/vote
 
 /**
  * Handle end of answer phase
@@ -78,6 +42,33 @@ function createVotingTimer(roomCode) {
 async function handleAnswerPhaseEnd(roomCode) {
   const room = getRoom(roomCode);
   if (!room || room.state !== GAME_STATES.ANSWERING) return;
+  
+  // Check if no one answered
+  if (room.playerAnswers.size === 0) {
+    console.log('[SERVER] No answers submitted, skipping to next round');
+    
+    // Show message and advance to next round
+    io.to(roomCode).emit('no-answers', {
+      message: 'Everyone was too slow! Let\'s try another one.'
+    });
+    
+    // Wait a moment, then start next round
+    setTimeout(() => {
+      const updatedRoom = getRoom(roomCode);
+      if (updatedRoom && updatedRoom.state === GAME_STATES.ANSWERING) {
+        startRound(roomCode);
+        const nextRoom = getRoom(roomCode);
+        
+        io.to(roomCode).emit('round-started', {
+          question: nextRoom.currentQuestion,
+          playerName: nextRoom.currentQuestionPlayer.name,
+          roundNumber: nextRoom.roundNumber
+        });
+      }
+    }, 3000);
+    
+    return;
+  }
   
   // Generate AI answer
   const playerAnswers = Array.from(room.playerAnswers.values());
@@ -88,15 +79,20 @@ async function handleAnswerPhaseEnd(roomCode) {
     // Prepare answers for voting
     prepareAnswersForVoting(roomCode, aiAnswer);
     
+    // Find AI answer index in shuffled answers
+    const aiAnswerIndex = room.shuffledAnswers.findIndex(a => a.isAI === true);
+    
+    // Extract answer texts for display
+    const answerTexts = room.shuffledAnswers.map(a => a.text);
+    
     // Notify all players in room
     io.to(roomCode).emit('answers-shown', {
-      answers: room.shuffledAnswers,
-      aiAnswerIndex: room.shuffledAnswers.indexOf(aiAnswer),
+      answers: answerTexts,
+      aiAnswerIndex: aiAnswerIndex,
       showAiIndex: false
     });
     
-    // Start voting timer
-    createVotingTimer(roomCode);
+    // No timer - voting will auto-advance when all vote
     
   } catch (error) {
     console.error('Error generating AI answer:', error);
@@ -114,14 +110,19 @@ function handleVotingPhaseEnd(roomCode) {
   // Calculate results
   const result = calculateResults(roomCode);
   
+  // Extract answer texts and authors for display
+  const answerData = room.shuffledAnswers.map(a => ({
+    text: a.text,
+    author: a.author,
+    isAI: a.isAI
+  }));
+  
   // Notify all players
   io.to(roomCode).emit('results-shown', {
     results: result.results,
     aiAnswerIndex: result.aiAnswerIndex,
-    answers: room.shuffledAnswers
+    answers: answerData
   });
-  
-  clearRoomTimer(roomCode);
   
   // Check for winner
   if (result.hasWinner) {
@@ -156,36 +157,54 @@ function handleVotingPhaseEnd(roomCode) {
 
 // Socket.io connection handling
 io.on('connection', (socket) => {
-  console.log('Player connected:', socket.id);
+  console.log('[SERVER] ==========================================');
+  console.log('[SERVER] NEW CONNECTION:', socket.id);
+  console.log('[SERVER] Total active rooms:', rooms.size);
   
   // Store room code for this socket
   let currentRoomCode = null;
   
   // Create room
   socket.on('create-room', (data) => {
+    console.log('[SERVER] ==========================================');
+    console.log('[SERVER] CREATE-ROOM EVENT RECEIVED');
+    console.log('[SERVER] Socket ID:', socket.id);
+    console.log('[SERVER] Data received:', JSON.stringify(data));
+    
     try {
       const { hostName } = data;
-      console.log('create-room event received:', hostName);
+      console.log('[SERVER] Host name:', hostName);
       
       if (!hostName) {
+        console.error('[SERVER] ERROR: Host name required');
         socket.emit('error', { message: 'Host name required' });
         return;
       }
       
+      console.log('[SERVER] Calling createRoom...');
       const room = createRoom(socket.id);
+      console.log('[SERVER] Room created with code:', room.code);
+      
+      console.log('[SERVER] Adding host to room...');
       addPlayerToRoom(room.code, socket.id, hostName);
       socket.join(room.code);
       currentRoomCode = room.code;
       
-      console.log('Room created:', room.code, 'Players:', room.players.length);
+      console.log('[SERVER] Room joined. Total players:', room.players.length);
+      console.log('[SERVER] Emitting room-created event...');
       
+      const connectedPlayers = room.players.filter(p => p.connected !== false);
       socket.emit('room-created', {
         roomCode: room.code,
-        players: room.players,
-        isHost: true
+        players: connectedPlayers,
+        isHost: true,
+        hostId: room.hostId
       });
+      
+      console.log('[SERVER] room-created event emitted successfully!');
+      console.log('[SERVER] ==========================================');
     } catch (error) {
-      console.error('Error creating room:', error);
+      console.error('[SERVER] ERROR creating room:', error);
       socket.emit('error', { message: error.message });
     }
   });
@@ -216,15 +235,18 @@ io.on('connection', (socket) => {
       currentRoomCode = roomCode;
       
       // Notify the new player
+      const connectedPlayers = room.players.filter(p => p.connected !== false);
       socket.emit('room-joined', {
         roomCode,
-        players: room.players,
-        isHost: room.hostId === socket.id
+        players: connectedPlayers,
+        isHost: room.hostId === socket.id,
+        hostId: room.hostId
       });
       
       // Notify all players in room
       io.to(roomCode).emit('player-joined', {
-        players: room.players
+        players: connectedPlayers,
+        hostId: room.hostId
       });
       
     } catch (error) {
@@ -234,32 +256,68 @@ io.on('connection', (socket) => {
   
   // Request room state (for players reconnecting or loading game page)
   socket.on('request-room-state', (data) => {
+    console.log('[SERVER] ==========================================');
+    console.log('[SERVER] REQUEST-ROOM-STATE EVENT RECEIVED');
+    console.log('[SERVER] Socket ID:', socket.id);
+    console.log('[SERVER] Data received:', JSON.stringify(data));
+    
     try {
-      const { roomCode } = data;
-      console.log('request-room-state for:', roomCode);
+      const { roomCode, playerName } = data;
+      console.log('[SERVER] Looking for room:', roomCode);
+      console.log('[SERVER] Active room codes:', Array.from(rooms.keys()));
+      
       const room = getRoom(roomCode);
       
       if (!room) {
-        console.log('Room not found:', roomCode);
+        console.error('[SERVER] ERROR: Room not found:', roomCode);
+        console.log('[SERVER] Available rooms:', Array.from(rooms.keys()));
         socket.emit('error', { message: 'Room not found' });
         return;
+      }
+      
+      console.log('[SERVER] Room found! Current players:', room.players.length);
+      
+      // Add player back to room if they're not already there
+      if (playerName) {
+        console.log('[SERVER] Adding player back to room:', playerName);
+        try {
+          addPlayerToRoom(roomCode, socket.id, playerName);
+          console.log('[SERVER] Player added successfully');
+        } catch (error) {
+          console.log('[SERVER] Player already in room or error:', error.message);
+        }
       }
       
       socket.join(roomCode);
       currentRoomCode = roomCode;
       
-      console.log('Room found, sending state. Players:', room.players.length);
+      const updatedRoom = getRoom(roomCode);
+      const connectedPlayers = updatedRoom.players.filter(p => p.connected !== false);
+      console.log('[SERVER] After adding player, total players:', connectedPlayers.length);
       
-      // Send current room state
+      console.log('[SERVER] Sending room-state to client...');
+      
+      // Send current room state (only connected players)
       socket.emit('room-state', {
         roomCode,
-        players: room.players,
-        isHost: room.hostId === socket.id,
-        gameState: room.state
+        players: connectedPlayers,
+        isHost: updatedRoom.hostId === socket.id,
+        hostId: updatedRoom.hostId,
+        gameState: updatedRoom.state
       });
       
+      // Also notify all other players in room about the updated player list
+      // (in case they don't have the latest list)
+      io.to(roomCode).emit('player-joined', {
+        players: connectedPlayers,
+        hostId: updatedRoom.hostId
+      });
+      
+      console.log('[SERVER] room-state event emitted successfully!');
+      console.log('[SERVER] ==========================================');
+      
     } catch (error) {
-      console.error('Error in request-room-state:', error);
+      console.error('[SERVER] ERROR in request-room-state:', error);
       socket.emit('error', { message: error.message });
     }
   });
@@ -274,7 +332,9 @@ io.on('connection', (socket) => {
       return;
     }
     
-    if (room.players.length < 2) {
+    // Count only connected players
+    const connectedPlayers = room.players.filter(p => p.connected !== false);
+    if (connectedPlayers.length < 2) {
       socket.emit('error', { message: 'Need at least 2 players' });
       return;
     }
@@ -303,10 +363,8 @@ io.on('connection', (socket) => {
     
     submitAnswer(currentRoomCode, socket.id, data.answer);
     
-    // Check if all players have answered
+    // Check if all players have answered - auto-advance
     if (allPlayersAnswered(currentRoomCode)) {
-      clearRoomTimer(currentRoomCode);
-      
       // Generate AI answer immediately
       handleAnswerPhaseEnd(currentRoomCode);
     }
@@ -321,11 +379,27 @@ io.on('connection', (socket) => {
     
     submitVote(currentRoomCode, socket.id, data.answerIndex);
     
-    // Check if all players have voted
+    // Check if all players have voted - auto-advance
     if (allPlayersVoted(currentRoomCode)) {
-      clearRoomTimer(currentRoomCode);
       handleVotingPhaseEnd(currentRoomCode);
     }
+  });
+  
+  // Skip to answers (host only)
+  socket.on('skip-to-answers', () => {
+    if (!currentRoomCode) return;
+    
+    const room = getRoom(currentRoomCode);
+    if (!room || room.state !== GAME_STATES.ANSWERING) return;
+    
+    // Only host can skip
+    if (room.hostId !== socket.id) {
+      socket.emit('error', { message: 'Only host can skip to answers' });
+      return;
+    }
+    
+    // Force advance to voting phase
+    handleAnswerPhaseEnd(currentRoomCode);
   });
   
   // Play again (only when game over, triggered by host)
@@ -357,27 +431,48 @@ io.on('connection', (socket) => {
           roundNumber: updatedRoom.roundNumber
         });
         
-        createAnswerTimer(currentRoomCode);
+        // Round started - no timer needed
       }, 3000);
     }
   });
   
   // Disconnect handling
   socket.on('disconnect', () => {
-    console.log('Player disconnected:', socket.id);
+    console.log('[SERVER] Player disconnected:', socket.id);
     
     if (currentRoomCode) {
-      removePlayer(currentRoomCode, socket.id);
-      
-      // Notify remaining players
       const room = getRoom(currentRoomCode);
-      if (room) {
-        io.to(currentRoomCode).emit('player-left', {
-          players: room.players
-        });
-      }
       
-      clearRoomTimer(currentRoomCode);
+      if (room) {
+        const wasHost = room.hostId === socket.id;
+        
+        console.log('[SERVER] Removing disconnected player from room:', currentRoomCode);
+        removePlayer(currentRoomCode, socket.id);
+        
+        const roomAfter = getRoom(currentRoomCode);
+        
+        if (wasHost && roomAfter) {
+          console.log('[SERVER] Host disconnected, but room still exists. New host:', roomAfter.hostId);
+          const connectedPlayers = roomAfter.players.filter(p => p.connected !== false);
+          // Notify remaining players
+          io.to(currentRoomCode).emit('player-left', {
+            players: connectedPlayers,
+            hostId: roomAfter.hostId
+          });
+        } else if (!wasHost && roomAfter) {
+          console.log('[SERVER] Regular player disconnected, notifying remaining players');
+          const connectedPlayers = roomAfter.players.filter(p => p.connected !== false);
+          // Notify remaining players
+          io.to(currentRoomCode).emit('player-left', {
+            players: connectedPlayers,
+            hostId: roomAfter.hostId
+          });
+        } else {
+          console.log('[SERVER] Room was deleted after player left');
+        }
+      } else {
+        console.log('[SERVER] Room not found when trying to remove player:', currentRoomCode);
+      }
     }
   });
 });

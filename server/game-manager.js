@@ -12,6 +12,9 @@ const GAME_STATES = {
 // Store all game rooms
 const rooms = new Map();
 
+// Store room cleanup timers (for rooms that are temporarily empty)
+const roomCleanupTimers = new Map();
+
 /**
  * Generate a random 4-letter room code
  */
@@ -62,21 +65,70 @@ function getRoom(roomCode) {
  * Add player to a room
  */
 function addPlayerToRoom(roomCode, playerId, playerName) {
+  console.log('[GAME-MANAGER] addPlayerToRoom called:', { roomCode, playerId, playerName });
   const room = rooms.get(roomCode);
   if (!room) {
     throw new Error('Room not found');
   }
   
-  if (room.players.find(p => p.id === playerId)) {
-    return room; // Player already in room
+  // Check if player already in room by socket ID (already connected)
+  const existingBySocketId = room.players.find(p => p.id === playerId && p.connected !== false);
+  if (existingBySocketId) {
+    console.log('[GAME-MANAGER] Player already in room by socket ID');
+    return room;
   }
   
+  // Check if player with same name exists (reconnection scenario)
+  const existingByName = room.players.find(p => p.name === playerName);
+  if (existingByName) {
+    console.log('[GAME-MANAGER] Player with same name exists, reconnecting...');
+    // Update the existing player's socket ID (they reconnected)
+    const oldId = existingByName.id;
+    
+    // Preserve score when reconnecting
+    if (room.scores.has(oldId)) {
+      room.scores.set(playerId, room.scores.get(oldId));
+      room.scores.delete(oldId);
+    }
+    
+    // If this player was the host, update hostId to their new socket ID
+    if (room.hostId === oldId) {
+      console.log('[GAME-MANAGER] Reconnecting player was the host, updating hostId');
+      room.hostId = playerId;
+    }
+    
+    // Update player info
+    existingByName.id = playerId;
+    existingByName.connected = true;
+    delete existingByName.disconnectedAt;
+    
+    // Ensure score is initialized if missing
+    if (!room.scores.has(playerId)) {
+      room.scores.set(playerId, room.scores.get(oldId) || 0);
+      if (oldId !== playerId && room.scores.has(oldId)) {
+        room.scores.delete(oldId);
+      }
+    }
+    
+    console.log('[GAME-MANAGER] Player reconnected, updated socket ID');
+    
+    // Cancel any cleanup timer since a player rejoined
+    cancelRoomCleanup(roomCode);
+    
+    return room;
+  }
+  
+  console.log('[GAME-MANAGER] Adding new player to room');
   room.players.push({
     id: playerId,
-    name: playerName
+    name: playerName,
+    connected: true
   });
   
   room.scores.set(playerId, 0);
+  
+  // Cancel any cleanup timer since a player joined
+  cancelRoomCleanup(roomCode);
   
   return room;
 }
@@ -85,17 +137,70 @@ function addPlayerToRoom(roomCode, playerId, playerName) {
  * Remove player from room
  */
 function removePlayer(roomCode, playerId) {
+  console.log('[GAME-MANAGER] removePlayer called:', { roomCode, playerId });
   const room = rooms.get(roomCode);
-  if (!room) return;
+  if (!room) {
+    console.log('[GAME-MANAGER] Room not found when removing player');
+    return;
+  }
   
-  room.players = room.players.filter(p => p.id !== playerId);
+  console.log('[GAME-MANAGER] Room found. Current players:', room.players.length);
+  console.log('[GAME-MANAGER] Is host:', room.hostId === playerId);
+  
+  // Mark player as disconnected but DON'T remove from players array (for reconnection matching)
+  const player = room.players.find(p => p.id === playerId);
+  if (player) {
+    player.connected = false;
+    player.disconnectedAt = Date.now();
+    console.log('[GAME-MANAGER] Marked player as disconnected, keeping in list for reconnection');
+  }
+  
+  // Clear active game state for this player
   room.scores.delete(playerId);
   room.playerAnswers.delete(playerId);
   room.votes.delete(playerId);
   
-  // Delete room if empty or if host left
-  if (room.players.length === 0 || room.hostId === playerId) {
+  // Count only connected players
+  const connectedPlayers = room.players.filter(p => p.connected !== false);
+  console.log('[GAME-MANAGER] Connected players:', connectedPlayers.length, 'Total players in list:', room.players.length);
+  
+  // Don't reassign host immediately - keep original hostId in case host reconnects
+  // Only reassign if no one is connected (will be handled during room cleanup if needed)
+  if (connectedPlayers.length === 0) {
+    console.log('[GAME-MANAGER] No connected players left, scheduling room deletion in 30 seconds for reconnection');
+    scheduleRoomCleanup(roomCode);
+  } else {
+    console.log('[GAME-MANAGER] Connected players still in room, keeping room alive');
+    cancelRoomCleanup(roomCode);
+  }
+}
+
+/**
+ * Schedule a room to be deleted after 30 seconds
+ */
+function scheduleRoomCleanup(roomCode) {
+  // Cancel any existing timer
+  cancelRoomCleanup(roomCode);
+  
+  // Schedule deletion in 30 seconds
+  const timer = setTimeout(() => {
+    console.log('[GAME-MANAGER] Cleanup timer expired, deleting room:', roomCode);
     rooms.delete(roomCode);
+    roomCleanupTimers.delete(roomCode);
+  }, 30000);
+  
+  roomCleanupTimers.set(roomCode, timer);
+  console.log('[GAME-MANAGER] Scheduled cleanup for room:', roomCode);
+}
+
+/**
+ * Cancel a scheduled room cleanup
+ */
+function cancelRoomCleanup(roomCode) {
+  if (roomCleanupTimers.has(roomCode)) {
+    clearTimeout(roomCleanupTimers.get(roomCode));
+    roomCleanupTimers.delete(roomCode);
+    console.log('[GAME-MANAGER] Cancelled cleanup for room:', roomCode);
   }
 }
 
@@ -108,8 +213,16 @@ function startRound(roomCode) {
     throw new Error('Room not found');
   }
   
-  // Pick a random player for this round's question
-  const randomPlayer = room.players[Math.floor(Math.random() * room.players.length)];
+  // Ensure all connected players have scores initialized
+  const connectedPlayers = room.players.filter(p => p.connected !== false);
+  for (const player of connectedPlayers) {
+    if (!room.scores.has(player.id)) {
+      room.scores.set(player.id, 0);
+    }
+  }
+  
+  // Pick a random connected player for this round's question
+  const randomPlayer = connectedPlayers[Math.floor(Math.random() * connectedPlayers.length)];
   room.currentQuestionPlayer = randomPlayer;
   
   // Get a random question and replace XX with player name
@@ -143,7 +256,9 @@ function allPlayersAnswered(roomCode) {
   const room = rooms.get(roomCode);
   if (!room) return false;
   
-  return room.playerAnswers.size === room.players.length;
+  // Count only connected players
+  const connectedPlayers = room.players.filter(p => p.connected !== false);
+  return room.playerAnswers.size === connectedPlayers.length;
 }
 
 /**
@@ -155,11 +270,30 @@ function prepareAnswersForVoting(roomCode, aiAnswer) {
   
   room.aiAnswer = aiAnswer;
   
-  // Combine player answers and AI answer
-  const allAnswers = [...Array.from(room.playerAnswers.values()), aiAnswer];
+  // Create answer entries with author info
+  const answerEntries = [];
+  
+  // Add player answers with author info
+  for (const [playerId, answer] of room.playerAnswers.entries()) {
+    const player = room.players.find(p => p.id === playerId);
+    answerEntries.push({
+      text: answer,
+      author: player ? player.name : 'Unknown',
+      authorId: playerId,
+      isAI: false
+    });
+  }
+  
+  // Add AI answer
+  answerEntries.push({
+    text: aiAnswer,
+    author: 'AI',
+    authorId: 'ai',
+    isAI: true
+  });
   
   // Shuffle the answers
-  const shuffled = allAnswers.sort(() => Math.random() - 0.5);
+  const shuffled = answerEntries.sort(() => Math.random() - 0.5);
   room.shuffledAnswers = shuffled;
   
   room.state = GAME_STATES.VOTING;
@@ -186,7 +320,9 @@ function allPlayersVoted(roomCode) {
   const room = rooms.get(roomCode);
   if (!room) return false;
   
-  return room.votes.size === room.players.length;
+  // Count only connected players
+  const connectedPlayers = room.players.filter(p => p.connected !== false);
+  return room.votes.size === connectedPlayers.length;
 }
 
 /**
@@ -196,34 +332,48 @@ function calculateResults(roomCode) {
   const room = rooms.get(roomCode);
   if (!room) return;
   
-  const aiAnswerIndex = room.shuffledAnswers.indexOf(room.aiAnswer);
+  // Find AI answer index
+  const aiAnswerIndex = room.shuffledAnswers.findIndex(a => a.isAI === true);
   const results = [];
   
-  // Process each player
-  for (const player of room.players) {
+  // Process each connected player
+  const connectedPlayers = room.players.filter(p => p.connected !== false);
+  for (const player of connectedPlayers) {
+    // Ensure score is initialized
+    if (!room.scores.has(player.id)) {
+      room.scores.set(player.id, 0);
+    }
+    
     const playerAnswer = room.playerAnswers.get(player.id);
-    const playerAnswerIndex = room.shuffledAnswers.indexOf(playerAnswer);
+    // Find index of this player's answer in shuffled array
+    const playerAnswerIndex = room.shuffledAnswers.findIndex(a => 
+      !a.isAI && a.authorId === player.id
+    );
     
     let pointsEarned = 0;
     const events = [];
     
     // Check if player guessed AI correctly
     const votedIndex = room.votes.get(player.id);
-    if (votedIndex === aiAnswerIndex) {
+    if (votedIndex !== undefined && votedIndex === aiAnswerIndex) {
       pointsEarned += 1;
       events.push('Guessed AI correctly!');
     }
     
     // Check if someone voted for this player's answer
-    for (const [voterId, votedIndex] of room.votes.entries()) {
-      if (votedIndex === playerAnswerIndex && voterId !== player.id) {
-        pointsEarned += 1;
-        events.push(`${room.players.find(p => p.id === voterId)?.name} voted for your answer!`);
+    if (playerAnswerIndex !== -1) {
+      for (const [voterId, votedIndex] of room.votes.entries()) {
+        if (votedIndex === playerAnswerIndex && voterId !== player.id) {
+          const voter = room.players.find(p => p.id === voterId);
+          pointsEarned += 1;
+          events.push(`${voter ? voter.name : 'Someone'} voted for your answer!`);
+        }
       }
     }
     
     // Update score
-    room.scores.set(player.id, room.scores.get(player.id) + pointsEarned);
+    const currentScore = room.scores.get(player.id) || 0;
+    room.scores.set(player.id, currentScore + pointsEarned);
     
     results.push({
       playerId: player.id,
@@ -288,6 +438,7 @@ function resetToLobby(roomCode) {
 
 module.exports = {
   GAME_STATES,
+  rooms,
   createRoom,
   getRoom,
   addPlayerToRoom,

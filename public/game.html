@@ -11,6 +11,7 @@
         <!-- Header -->
         <div class="game-header">
             <div class="room-info">
+                <button id="backToHomeBtn" class="btn btn-secondary hidden">← Back to Home</button>
                 <span class="room-code" id="roomCodeDisplay">----</span>
                 <button class="btn-small" onclick="copyRoomCode()">Copy Code</button>
             </div>
@@ -26,7 +27,7 @@
             <div id="lobbyState" class="game-state">
                 <h2>Waiting for players...</h2>
                 <div class="players-list">
-                    <h3>Players:</h3>
+                    <h3 id="playersHeader">Players:</h3>
                     <ul id="playersList"></ul>
                 </div>
                 <div id="hostControls">
@@ -43,11 +44,13 @@
                 <div class="question-card">
                     <div class="round-info">Round <span id="roundNumber">1</span></div>
                     <h2 id="currentQuestion"></h2>
-                    <div class="timer" id="answerTimer">20</div>
                 </div>
                 <div class="answer-input-area">
                     <input type="text" id="answerInput" placeholder="Type your answer here..." maxlength="200" class="input-large">
                     <button id="submitAnswerBtn" class="btn btn-primary">Submit Answer</button>
+                </div>
+                <div id="hostSkipControls" class="hidden">
+                    <button id="skipToAnswersBtn" class="btn btn-secondary">Skip to Answers</button>
                 </div>
             </div>
             
@@ -55,7 +58,6 @@
             <div id="votingState" class="game-state hidden">
                 <div class="question-card">
                     <h2>Which answer is AI?</h2>
-                    <div class="timer" id="voteTimer">30</div>
                 </div>
                 <div class="answers-grid" id="answersGrid"></div>
                 <div id="votedMessage" class="status-message hidden">
