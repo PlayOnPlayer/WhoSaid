@@ -72,9 +72,11 @@ async function handleAnswerPhaseEnd(roomCode) {
   
   // Generate AI answer
   const playerAnswers = Array.from(room.playerAnswers.values());
+  // Get all player names for detection and removal
+  const playerNames = room.players.map(p => p.name);
   
   try {
-    const aiAnswer = await generateAIAnswer(room.currentQuestion, playerAnswers);
+    const aiAnswer = await generateAIAnswer(room.currentQuestion, playerAnswers, playerNames);
     
     // Prepare answers for voting
     prepareAnswersForVoting(roomCode, aiAnswer);
@@ -139,16 +141,14 @@ function handleVotingPhaseEnd(roomCode) {
       if (room.state === GAME_STATES.RESULTS) {
         const updatedRoom = getRoom(roomCode);
         if (updatedRoom && updatedRoom.state === GAME_STATES.RESULTS) {
-          startRound(roomCode);
-          const nextRoom = getRoom(roomCode);
-          
-          io.to(roomCode).emit('round-started', {
-            question: nextRoom.currentQuestion,
-            playerName: nextRoom.currentQuestionPlayer.name,
-            roundNumber: nextRoom.roundNumber
-          });
-          
-          createAnswerTimer(roomCode);
+        startRound(roomCode);
+        const nextRoom = getRoom(roomCode);
+        
+        io.to(roomCode).emit('round-started', {
+          question: nextRoom.currentQuestion,
+          playerName: nextRoom.currentQuestionPlayer.name,
+          roundNumber: nextRoom.roundNumber
+        });
         }
       }
     }, 8000);
@@ -344,14 +344,11 @@ io.on('connection', (socket) => {
     const updatedRoom = getRoom(currentRoomCode);
     
     // Notify all players
-    io.to(currentRoomCode).emit('round-started', {
-      question: updatedRoom.currentQuestion,
-      playerName: updatedRoom.currentQuestionPlayer.name,
-      roundNumber: updatedRoom.roundNumber
-    });
-    
-    // Start answer timer
-    createAnswerTimer(currentRoomCode);
+        io.to(currentRoomCode).emit('round-started', {
+          question: updatedRoom.currentQuestion,
+          playerName: updatedRoom.currentQuestionPlayer.name,
+          roundNumber: updatedRoom.roundNumber
+        });
   });
   
   // Submit answer
@@ -386,7 +383,7 @@ io.on('connection', (socket) => {
   });
   
   // Skip to answers (host only)
-  socket.on('skip-to-answers', () => {
+  socket.on('skip-to-answers', async () => {
     if (!currentRoomCode) return;
     
     const room = getRoom(currentRoomCode);
@@ -398,8 +395,9 @@ io.on('connection', (socket) => {
       return;
     }
     
-    // Force advance to voting phase
-    handleAnswerPhaseEnd(currentRoomCode);
+    console.log('[SERVER] Host skipping to answers');
+    // Force advance to voting phase (same as when timer expired)
+    await handleAnswerPhaseEnd(currentRoomCode);
   });
   
   // Play again (only when game over, triggered by host)

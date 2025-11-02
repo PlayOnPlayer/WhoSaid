@@ -361,6 +361,7 @@ startGameBtn.addEventListener('click', () => {
 
 if (skipToAnswersBtn) {
     skipToAnswersBtn.addEventListener('click', () => {
+        console.log('[GAME.JS] Skip to answers button clicked');
         socket.emit('skip-to-answers');
     });
 }
